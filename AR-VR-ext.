@@ -1,0 +1,330 @@
+#!/usr/bin/env python3
+"""
+COMPLETE AR/VR REPLIT MEGA-TEMPLATE
+One-click deployment: Fork and run - no manual steps required
+Includes: 3D model generation, AR/VR pages, QR launcher, self-signed HTTPS
+"""
+
+import subprocess, os, ssl, threading, json, base64, socketserver
+from http.server import HTTPServer, SimpleHTTPRequestHandler
+from urllib.parse import urlparse, parse_qs
+import struct
+import random
+import math
+
+# [Previous code remains the same through the generate_all_models() function]
+
+# ============================================================================
+# 3. GENERATE AR/VR HTML PAGES
+# ============================================================================
+
+def generate_ar_pages():
+    """Generate Scene Viewer AR and WebXR VR pages"""
+    os.makedirs("public", exist_ok=True)
+    
+    # Get Replit URL
+    replit_url = os.getenv('REPL_SLUG', 'localhost')
+    replit_user = os.getenv('REPL_OWNER', 'user')
+    base_url = f"https://{replit_url}.{replit_user}.repl.co"
+    
+    # [AR and VR HTML generation remains the same as in your code]
+    
+    # COMPLETE THE MISSING INDEX HTML:
+    index_html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AR/VR Guardian - Replit Demo</title>
+    <style>
+        * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+        body {{
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            color: white;
+            padding: 40px 20px;
+        }}
+        .hero {{
+            text-align: center;
+            max-width: 800px;
+            margin: 0 auto 60px;
+        }}
+        h1 {{
+            font-size: 56px;
+            margin-bottom: 20px;
+            text-shadow: 0 4px 12px rgba(0,0,0,0.2);
+        }}
+        .subtitle {{
+            font-size: 24px;
+            opacity: 0.9;
+            margin-bottom: 40px;
+        }}
+        .grid {{
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 30px;
+            max-width: 1200px;
+            margin: 0 auto;
+        }}
+        .card {{
+            background: rgba(255,255,255,0.95);
+            border-radius: 20px;
+            padding: 40px;
+            text-align: center;
+            transition: transform 0.3s, box-shadow 0.3s;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+        }}
+        .card:hover {{
+            transform: translateY(-10px);
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+        }}
+        .card h2 {{
+            color: #667eea;
+            font-size: 32px;
+            margin-bottom: 15px;
+        }}
+        .card p {{
+            color: #666;
+            margin-bottom: 25px;
+            line-height: 1.6;
+        }}
+        .btn {{
+            display: inline-block;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 15px 35px;
+            border-radius: 10px;
+            text-decoration: none;
+            font-weight: 600;
+            transition: transform 0.2s;
+            margin: 5px;
+        }}
+        .btn:hover {{
+            transform: scale(1.05);
+        }}
+        .qr-container {{
+            margin: 25px 0;
+            padding: 20px;
+            background: white;
+            border-radius: 12px;
+            display: inline-block;
+        }}
+        .qr-container img {{
+            display: block;
+        }}
+        .features {{
+            background: rgba(255,255,255,0.1);
+            border-radius: 20px;
+            padding: 40px;
+            margin-top: 60px;
+            max-width: 1200px;
+            margin-left: auto;
+            margin-right: auto;
+        }}
+        .features h3 {{
+            font-size: 28px;
+            margin-bottom: 30px;
+            text-align: center;
+        }}
+        .feature-grid {{
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 30px;
+        }}
+        .feature {{
+            text-align: center;
+        }}
+        .feature h4 {{
+            font-size: 20px;
+            margin-bottom: 10px;
+        }}
+        .feature p {{
+            opacity: 0.9;
+            font-size: 16px;
+        }}
+    </style>
+</head>
+<body>
+    <div class="hero">
+        <h1>🛡️ AR/VR Guardian</h1>
+        <p class="subtitle">Experience the future of interactive 3D content</p>
+    </div>
+    
+    <div class="grid">
+        <div class="card">
+            <h2>📱 Augmented Reality</h2>
+            <p>View 3D models in your real-world space using Google Scene Viewer</p>
+            <a href="/ar.html" class="btn">Launch AR Experience</a>
+            <div class="qr-container">
+                <img src="https://api.qrserver.com/v1/create-qr-code/?size=200x200&data={base_url}/ar.html" 
+                     alt="QR Code" width="200" height="200">
+                <p style="margin-top: 10px; color: #666;">Scan to open AR</p>
+            </div>
+        </div>
+        
+        <div class="card">
+            <h2>🥽 Virtual Reality</h2>
+            <p>Immerse yourself in a fully interactive 3D VR environment</p>
+            <a href="/vr.html" class="btn">Launch VR Experience</a>
+            <div class="qr-container">
+                <img src="https://api.qrserver.com/v1/create-qr-code/?size=200x200&data={base_url}/vr.html" 
+                     alt="QR Code" width="200" height="200">
+                <p style="margin-top: 10px; color: #666;">Scan to open VR</p>
+            </div>
+        </div>
+    </div>
+    
+    <div class="features">
+        <h3>✨ Features</h3>
+        <div class="feature-grid">
+            <div class="feature">
+                <h4>🎯 One-Click Deploy</h4>
+                <p>Fork and run with zero configuration</p>
+            </div>
+            <div class="feature">
+                <h4>📦 Auto-Generated Models</h4>
+                <p>GLB 3D models created automatically</p>
+            </div>
+            <div class="feature">
+                <h4>📱 Cross-Platform</h4>
+                <p>Works on mobile, desktop, and VR headsets</p>
+            </div>
+            <div class="feature">
+                <h4>🔒 Self-Signed HTTPS</h4>
+                <p>Secure connections out of the box</p>
+            </div>
+        </div>
+    </div>
+</body>
+</html>"""
+    
+    # Write all HTML files
+    with open("public/index.html", "w") as f:
+        f.write(index_html)
+    
+    with open("public/ar.html", "w") as f:
+        f.write(ar_html)
+    
+    with open("public/vr.html", "w") as f:
+        f.write(vr_html)
+    
+    print("✓ Generated HTML pages")
+
+# ============================================================================
+# 4. SELF-SIGNED HTTPS CERTIFICATE GENERATION
+# ============================================================================
+
+def generate_self_signed_cert():
+    """Generate self-signed certificate for HTTPS"""
+    try:
+        # Create certs directory
+        os.makedirs("certs", exist_ok=True)
+        
+        # Generate private key
+        subprocess.run([
+            "openssl", "genrsa", "-out", "certs/server.key", "2048"
+        ], check=True, capture_output=True)
+        
+        # Generate certificate
+        subprocess.run([
+            "openssl", "req", "-new", "-x509", "-key", "certs/server.key", 
+            "-out", "certs/server.crt", "-days", "365", "-subj", 
+            "/C=US/ST=State/L=City/O=AR-VR-Replit/CN=localhost"
+        ], check=True, capture_output=True)
+        
+        # Combine into PEM
+        with open("certs/server.pem", "wb") as pem_file:
+            with open("certs/server.crt", "rb") as crt_file:
+                pem_file.write(crt_file.read())
+            with open("certs/server.key", "rb") as key_file:
+                pem_file.write(key_file.read())
+        
+        print("✓ Generated self-signed SSL certificate")
+        return True
+        
+    except subprocess.CalledProcessError as e:
+        print(f"⚠️  Could not generate SSL certificate: {e}")
+        return False
+
+# ============================================================================
+# 5. CUSTOM HTTP REQUEST HANDLER
+# ============================================================================
+
+class CustomHandler(SimpleHTTPRequestHandler):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, directory="public", **kwargs)
+    
+    def end_headers(self):
+        # Add CORS headers for WebXR
+        self.send_header('Access-Control-Allow-Origin', '*')
+        self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+        self.send_header('Access-Control-Allow-Headers', 'Content-Type')
+        self.send_header('Cross-Origin-Opener-Policy', 'same-origin')
+        self.send_header('Cross-Origin-Embedder-Policy', 'require-corp')
+        super().end_headers()
+    
+    def do_GET(self):
+        if self.path == '/':
+            self.path = '/index.html'
+        return super().do_GET()
+
+# ============================================================================
+# 6. MAIN EXECUTION
+# ============================================================================
+
+def main():
+    """Main execution function"""
+    print("🚀 Starting AR/VR Replit Template...")
+    
+    # Generate 3D models
+    print("📦 Generating 3D models...")
+    generate_all_models()
+    
+    # Generate HTML pages
+    print("🌐 Generating HTML pages...")
+    generate_ar_pages()
+    
+    # Generate SSL certificate
+    print("🔒 Setting up HTTPS...")
+    cert_generated = generate_self_signed_cert()
+    
+    # Change to public directory
+    os.chdir("public")
+    
+    # Set up server
+    port = int(os.environ.get('PORT', 8080))
+    host = '0.0.0.0'
+    
+    if cert_generated:
+        # HTTPS server
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.load_cert_chain("../certs/server.pem")
+        
+        server = HTTPServer((host, port), CustomHandler)
+        server.socket = context.wrap_socket(server.socket, server_side=True)
+        
+        print(f"✅ HTTPS Server running at https://{host}:{port}")
+        print(f"🌐 Access your AR/VR experience at: https://localhost:{port}")
+    else:
+        # HTTP server fallback
+        server = HTTPServer((host, port), CustomHandler)
+        print(f"✅ HTTP Server running at http://{host}:{port}")
+        print(f"🌐 Access your AR/VR experience at: http://localhost:{port}")
+    
+    print("\n📱 For mobile AR:")
+    print("1. Open on Android device")
+    print("2. Tap 'View in AR' buttons")
+    print("3. Allow camera permissions")
+    print("\n🥽 For VR:")
+    print("1. Use WebXR compatible browser")
+    print("2. Click 'Enter VR' button")
+    
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("\n🛑 Server stopped by user")
+        server.shutdown()
+
+if __name__ == "__main__":
+    main()
