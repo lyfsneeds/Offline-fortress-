@@ -1,0 +1,572 @@
+#!/usr/bin/env python3
+"""
+COMPLETE AR/VR REPLIT MEGA-TEMPLATE
+One-click deployment: Fork and run - no manual steps required
+Includes: 3D model generation, AR/VR pages, QR launcher, self-signed HTTPS
+"""
+
+import subprocess, os, ssl, threading, json, base64, socketserver
+from http.server import HTTPServer, SimpleHTTPRequestHandler
+from urllib.parse import urlparse, parse_qs
+import struct
+import random
+import math
+
+# ============================================================================
+# 1. PROPER GLB MODEL GENERATOR (Not corrupt base64)
+# ============================================================================
+
+def generate_glb_model(name, color_r, color_g, color_b, geometry="cube"):
+    """Generate valid GLB 2.0 binary file with proper structure"""
+    
+    # Create vertices based on geometry
+    if geometry == "cube":
+        vertices = [
+            -1, -1, -1,  1, -1, -1,  1,  1, -1, -1,  1, -1,  # Front
+            -1, -1,  1,  1, -1,  1,  1,  1,  1, -1,  1,  1,  # Back
+        ]
+        indices = [
+            0,1,2, 0,2,3,  4,5,6, 4,6,7,  0,4,7, 0,7,3,
+            1,5,6, 1,6,2,  0,1,5, 0,5,4,  3,2,6, 3,6,7
+        ]
+    elif geometry == "sphere":
+        vertices = []
+        indices = []
+        rings = 16
+        sectors = 32
+        for r in range(rings + 1):
+            theta = r * math.pi / rings
+            for s in range(sectors + 1):
+                phi = s * 2 * math.pi / sectors
+                x = math.sin(theta) * math.cos(phi)
+                y = math.cos(theta)
+                z = math.sin(theta) * math.sin(phi)
+                vertices.extend([x, y, z])
+        for r in range(rings):
+            for s in range(sectors):
+                first = r * (sectors + 1) + s
+                second = first + sectors + 1
+                indices.extend([first, second, first + 1, second, second + 1, first + 1])
+    else:  # pyramid
+        vertices = [
+            0, 2, 0,   -1, -1, -1,   1, -1, -1,
+            0, 2, 0,    1, -1, -1,   1, -1,  1,
+            0, 2, 0,    1, -1,  1,  -1, -1,  1,
+            0, 2, 0,   -1, -1,  1,  -1, -1, -1,
+        ]
+        indices = list(range(len(vertices) // 3))
+    
+    # Convert to binary
+    vertex_data = struct.pack(f'{len(vertices)}f', *vertices)
+    index_data = struct.pack(f'{len(indices)}H', *indices)
+    
+    # GLB JSON structure
+    gltf_json = {
+        "asset": {"version": "2.0", "generator": f"AR-VR-Replit-{name}"},
+        "scene": 0,
+        "scenes": [{"nodes": [0]}],
+        "nodes": [{"mesh": 0}],
+        "meshes": [{
+            "primitives": [{
+                "attributes": {"POSITION": 0},
+                "indices": 1,
+                "material": 0
+            }]
+        }],
+        "materials": [{
+            "pbrMetallicRoughness": {
+                "baseColorFactor": [color_r, color_g, color_b, 1.0],
+                "metallicFactor": 0.5,
+                "roughnessFactor": 0.5
+            }
+        }],
+        "buffers": [{"byteLength": len(vertex_data) + len(index_data)}],
+        "bufferViews": [
+            {"buffer": 0, "byteOffset": 0, "byteLength": len(vertex_data), "target": 34962},
+            {"buffer": 0, "byteOffset": len(vertex_data), "byteLength": len(index_data), "target": 34963}
+        ],
+        "accessors": [
+            {"bufferView": 0, "byteOffset": 0, "componentType": 5126, "count": len(vertices)//3, "type": "VEC3",
+             "min": [min(vertices[i::3]) for i in range(3)], "max": [max(vertices[i::3]) for i in range(3)]},
+            {"bufferView": 1, "byteOffset": 0, "componentType": 5123, "count": len(indices), "type": "SCALAR"}
+        ]
+    }
+    
+    json_str = json.dumps(gltf_json, separators=(',', ':'))
+    json_bytes = json_str.encode('utf-8')
+    json_padding = (4 - len(json_bytes) % 4) % 4
+    json_chunk = json_bytes + b' ' * json_padding
+    
+    bin_data = vertex_data + index_data
+    bin_padding = (4 - len(bin_data) % 4) % 4
+    bin_chunk = bin_data + b'\x00' * bin_padding
+    
+    # GLB header
+    total_length = 12 + 8 + len(json_chunk) + 8 + len(bin_chunk)
+    glb = struct.pack('<III', 0x46546C67, 2, total_length)  # Magic, version, length
+    glb += struct.pack('<II', len(json_chunk), 0x4E4F534A)  # JSON chunk
+    glb += json_chunk
+    glb += struct.pack('<II', len(bin_chunk), 0x004E4942)   # BIN chunk
+    glb += bin_chunk
+    
+    return glb
+
+# ============================================================================
+# 2. GENERATE ALL 3D MODELS ON STARTUP
+# ============================================================================
+
+def generate_all_models():
+    """Generate GLB models for AR/VR"""
+    os.makedirs("public/models", exist_ok=True)
+    
+    models = {
+        "guardian.glb": (0.2, 0.6, 1.0, "cube"),      # Blue cube
+        "sentinel.glb": (1.0, 0.3, 0.2, "sphere"),    # Red sphere
+        "watcher.glb": (0.3, 1.0, 0.4, "pyramid"),    # Green pyramid
+    }
+    
+    for filename, (r, g, b, geom) in models.items():
+        glb_data = generate_glb_model(filename, r, g, b, geom)
+        with open(f"public/models/{filename}", "wb") as f:
+            f.write(glb_data)
+        print(f"✓ Generated {filename} ({len(glb_data)} bytes)")
+
+# ============================================================================
+# 3. GENERATE AR/VR HTML PAGES
+# ============================================================================
+
+def generate_ar_pages():
+    """Generate Scene Viewer AR and WebXR VR pages"""
+    os.makedirs("public", exist_ok=True)
+    
+    # Get Replit URL
+    replit_url = os.getenv('REPL_SLUG', 'localhost')
+    replit_user = os.getenv('REPL_OWNER', 'user')
+    base_url = f"https://{replit_url}.{replit_user}.repl.co"
+    
+    # ========================================================================
+    # AR Page (Google Scene Viewer)
+    # ========================================================================
+    ar_html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AR Guardian - Scene Viewer</title>
+    <style>
+        * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+        body {{
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }}
+        .container {{
+            background: rgba(255,255,255,0.95);
+            border-radius: 24px;
+            padding: 40px;
+            max-width: 500px;
+            width: 100%;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            text-align: center;
+        }}
+        h1 {{
+            color: #667eea;
+            margin-bottom: 10px;
+            font-size: 32px;
+        }}
+        p {{
+            color: #666;
+            margin-bottom: 30px;
+            line-height: 1.6;
+        }}
+        .ar-button {{
+            display: inline-block;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 18px 40px;
+            border-radius: 12px;
+            text-decoration: none;
+            font-weight: 600;
+            font-size: 18px;
+            transition: transform 0.2s, box-shadow 0.2s;
+            box-shadow: 0 8px 20px rgba(102,126,234,0.4);
+            margin: 10px;
+        }}
+        .ar-button:hover {{
+            transform: translateY(-2px);
+            box-shadow: 0 12px 30px rgba(102,126,234,0.6);
+        }}
+        .ar-button:active {{
+            transform: translateY(0);
+        }}
+        .model-grid {{
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+            gap: 15px;
+            margin-top: 30px;
+        }}
+        .model-card {{
+            background: #f8f9fa;
+            border-radius: 12px;
+            padding: 20px;
+            transition: transform 0.2s;
+        }}
+        .model-card:hover {{
+            transform: scale(1.05);
+        }}
+        .info {{
+            background: #fff3cd;
+            border-left: 4px solid #ffc107;
+            padding: 15px;
+            border-radius: 8px;
+            margin-top: 20px;
+            text-align: left;
+            font-size: 14px;
+        }}
+        .qr-code {{
+            margin: 20px 0;
+            padding: 20px;
+            background: white;
+            border-radius: 12px;
+            display: inline-block;
+        }}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🛡️ AR Guardian</h1>
+        <p>View 3D models in your real-world space using augmented reality</p>
+        
+        <div class="model-grid">
+            <div class="model-card">
+                <h3>Guardian</h3>
+                <a href="intent://arvr.google.com/scene-viewer/1.0?file={base_url}/models/guardian.glb&mode=ar_preferred#Intent;scheme=https;package=com.google.ar.core;action=android.intent.action.VIEW;S.browser_fallback_url=https://developers.google.com/ar;end;" 
+                   class="ar-button">View in AR</a>
+            </div>
+            
+            <div class="model-card">
+                <h3>Sentinel</h3>
+                <a href="intent://arvr.google.com/scene-viewer/1.0?file={base_url}/models/sentinel.glb&mode=ar_preferred#Intent;scheme=https;package=com.google.ar.core;action=android.intent.action.VIEW;S.browser_fallback_url=https://developers.google.com/ar;end;" 
+                   class="ar-button">View in AR</a>
+            </div>
+            
+            <div class="model-card">
+                <h3>Watcher</h3>
+                <a href="intent://arvr.google.com/scene-viewer/1.0?file={base_url}/models/watcher.glb&mode=ar_preferred#Intent;scheme=https;package=com.google.ar.core;action=android.intent.action.VIEW;S.browser_fallback_url=https://developers.google.com/ar;end;" 
+                   class="ar-button">View in AR</a>
+            </div>
+        </div>
+        
+        <div class="info">
+            <strong>📱 How to use:</strong><br>
+            1. Open on an Android device<br>
+            2. Tap "View in AR"<br>
+            3. Point camera at a flat surface<br>
+            4. Place and interact with 3D models
+        </div>
+        
+        <div class="qr-code">
+            <img src="https://api.qrserver.com/v1/create-qr-code/?size=200x200&data={base_url}/ar.html" 
+                 alt="QR Code" width="200" height="200">
+            <p style="margin-top: 10px; color: #666;">Scan to open on mobile</p>
+        </div>
+    </div>
+</body>
+</html>"""
+    
+    # ========================================================================
+    # VR Page (WebXR)
+    # ========================================================================
+    vr_html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>VR Guardian - Immersive Experience</title>
+    <script src="https://aframe.io/releases/1.4.2/aframe.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/gh/c-frame/aframe-extras@7.0.0/dist/aframe-extras.min.js"></script>
+    <style>
+        body {{ margin: 0; overflow: hidden; }}
+        #loading {{
+            position: fixed;
+            top: 0; left: 0;
+            width: 100%; height: 100%;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-family: sans-serif;
+            z-index: 1000;
+            transition: opacity 0.5s;
+        }}
+        #loading.hidden {{ opacity: 0; pointer-events: none; }}
+        .spinner {{
+            border: 4px solid rgba(255,255,255,0.3);
+            border-top: 4px solid white;
+            border-radius: 50%;
+            width: 60px;
+            height: 60px;
+            animation: spin 1s linear infinite;
+            margin-bottom: 20px;
+        }}
+        @keyframes spin {{
+            0% {{ transform: rotate(0deg); }}
+            100% {{ transform: rotate(360deg); }}
+        }}
+        #info {{
+            position: fixed;
+            top: 20px;
+            left: 20px;
+            background: rgba(0,0,0,0.7);
+            color: white;
+            padding: 15px;
+            border-radius: 8px;
+            font-family: monospace;
+            font-size: 12px;
+            z-index: 100;
+        }}
+    </style>
+</head>
+<body>
+    <div id="loading">
+        <div class="spinner"></div>
+        <h2>Loading VR Experience...</h2>
+        <p>Put on your VR headset when ready</p>
+    </div>
+    
+    <div id="info">
+        🎮 Controls:<br>
+        WASD - Move<br>
+        Mouse - Look<br>
+        Click - Teleport<br>
+        VR Button - Enter VR
+    </div>
+    
+    <a-scene 
+        loading-screen="enabled: false"
+        renderer="antialias: true; colorManagement: true; sortObjects: true; physicallyCorrectLights: true"
+        vr-mode-ui="enabled: true">
+        
+        <!-- Assets -->
+        <a-assets>
+            <a-asset-item id="guardian" src="/models/guardian.glb"></a-asset-item>
+            <a-asset-item id="sentinel" src="/models/sentinel.glb"></a-asset-item>
+            <a-asset-item id="watcher" src="/models/watcher.glb"></a-asset-item>
+        </a-assets>
+        
+        <!-- Camera with teleport controls -->
+        <a-entity id="rig" movement-controls="fly: false; speed: 0.5">
+            <a-entity 
+                camera 
+                position="0 1.6 0" 
+                look-controls="pointerLockEnabled: true">
+                <a-entity 
+                    cursor="rayOrigin: mouse"
+                    raycaster="objects: .clickable">
+                </a-entity>
+            </a-entity>
+            
+            <!-- VR controllers -->
+            <a-entity 
+                oculus-touch-controls="hand: left"
+                vive-controls="hand: left">
+            </a-entity>
+            <a-entity 
+                oculus-touch-controls="hand: right"
+                vive-controls="hand: right">
+            </a-entity>
+        </a-entity>
+        
+        <!-- Environment -->
+        <a-sky color="#87CEEB"></a-sky>
+        <a-plane 
+            position="0 0 0" 
+            rotation="-90 0 0" 
+            width="100" 
+            height="100" 
+            color="#7BC8A4"
+            shadow="receive: true">
+        </a-plane>
+        
+        <!-- Lighting -->
+        <a-light type="ambient" intensity="0.5"></a-light>
+        <a-light type="directional" position="5 10 5" intensity="1" castShadow="true"></a-light>
+        
+        <!-- 3D Models in circle formation -->
+        <a-entity 
+            gltf-model="#guardian" 
+            position="3 1 -5" 
+            scale="2 2 2"
+            animation="property: rotation; to: 0 360 0; loop: true; dur: 10000; easing: linear"
+            class="clickable"
+            shadow="cast: true">
+        </a-entity>
+        
+        <a-entity 
+            gltf-model="#sentinel" 
+            position="-3 1 -5" 
+            scale="2 2 2"
+            animation="property: rotation; to: 0 360 0; loop: true; dur: 8000; easing: linear"
+            class="clickable"
+            shadow="cast: true">
+        </a-entity>
+        
+        <a-entity 
+            gltf-model="#watcher" 
+            position="0 1 -8" 
+            scale="2 2 2"
+            animation="property: rotation; to: 0 360 0; loop: true; dur: 12000; easing: linear"
+            class="clickable"
+            shadow="cast: true">
+        </a-entity>
+        
+        <!-- Floating text -->
+        <a-text 
+            value="Welcome to VR Guardian" 
+            position="0 3 -5" 
+            align="center" 
+            color="#667eea"
+            scale="2 2 2">
+        </a-text>
+        
+        <!-- Interactive pedestal -->
+        <a-cylinder 
+            position="0 0.5 -3" 
+            radius="1" 
+            height="1" 
+            color="#764ba2"
+            shadow="cast: true">
+        </a-cylinder>
+    </a-scene>
+    
+    <script>
+        // Hide loading screen when scene loads
+        document.querySelector('a-scene').addEventListener('loaded', () => {{
+            setTimeout(() => {{
+                document.getElementById('loading').classList.add('hidden');
+            }}, 1000);
+        }});
+        
+        // Log VR enter/exit
+        document.querySelector('a-scene').addEventListener('enter-vr', () => {{
+            console.log('Entered VR mode');
+        }});
+        
+        document.querySelector('a-scene').addEventListener('exit-vr', () => {{
+            console.log('Exited VR mode');
+        }});
+    </script>
+</body>
+</html>"""
+    
+    # ========================================================================
+    # Landing Page with QR Codes
+    # ========================================================================
+    index_html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AR/VR Guardian - Replit Demo</title>
+    <style>
+        * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+        body {{
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            color: white;
+            padding: 40px 20px;
+        }}
+        .hero {{
+            text-align: center;
+            max-width: 800px;
+            margin: 0 auto 60px;
+        }}
+        h1 {{
+            font-size: 56px;
+            margin-bottom: 20px;
+            text-shadow: 0 4px 12px rgba(0,0,0,0.2);
+        }}
+        .subtitle {{
+            font-size: 24px;
+            opacity: 0.9;
+            margin-bottom: 40px;
+        }}
+        .grid {{
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 30px;
+            max-width: 1200px;
+            margin: 0 auto;
+        }}
+        .card {{
+            background: rgba(255,255,255,0.95);
+            border-radius: 20px;
+            padding: 40px;
+            text-align: center;
+            transition: transform 0.3s, box-shadow 0.3s;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+        }}
+        .card:hover {{
+            transform: translateY(-10px);
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+        }}
+        .card h2 {{
+            color: #667eea;
+            font-size: 32px;
+            margin-bottom: 15px;
+        }}
+        .card p {{
+            color: #666;
+            margin-bottom: 25px;
+            line-height: 1.6;
+        }}
+        .btn {{
+            display: inline-block;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 15px 35px;
+            border-radius: 10px;
+            text-decoration: none;
+            font-weight: 600;
+            transition: transform 0.2s;
+            margin: 5px;
+        }}
+        .btn:hover {{
+            transform: scale(1.05);
+        }}
+        .qr-container {{
+            margin: 25px 0;
+            padding: 20px;
+            background: white;
+            border-radius: 12px;
+            display: inline-block;
+        }}
+        .qr-container img {{
+            display: block;
+        }}
+        .features {{
+            background: rgba(255,255,255,0.1);
+            border-radius: 20px;
+            padding: 40px;
+            margin-top: 60px;
+            max-width: 1200px;
+            margin-left: auto;
+            margin-right: auto;
+        }}
+        .features h3 {{
+            font-size: 28px;
+            margin-bottom: 30px;
+            text-align: center;
+        }}
+        .feature-grid {{
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+  
