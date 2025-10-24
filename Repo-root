@@ -1,0 +1,25 @@
+# from repo root
+git add client
+git commit -m "feat: add Flutter client for Help-Nearby calls"
+git push
+# Flutter build artefacts inside client/
+client/build/
+client/.dart_tool/
+client/.flutter-plugins
+client/.flutter-plugins-dependencies
+client/android/app/google-services.json   # if you add Firebase later
+client/ios/Runner/GoogleService-Info.plist
+cd functions
+# edit, then
+git add functions
+git commit -m "fix: tighten toxicity threshold"
+cd client
+# edit, then
+git add client
+git commit -m "ui: darken hang-up button"
+# backend
+firebase deploy --only functions
+
+# frontend
+cd client
+flutter build apk --release      # or ios, web, etc.
