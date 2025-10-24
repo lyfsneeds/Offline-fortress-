@@ -1,0 +1,258 @@
+FirebaseFunctions.instanceMainAxisAlignment.center# backend
+firebase deploy --only functions
+
+# frontend
+cd client
+flutter build apk --release      # or ios, web, etc.
+dependencies:
+  flutter:
+    sdk: flutter
+  firebase_core: ^2.15.1
+  firebase_messaging: ^14.7.0
+  cloud_functions: ^4.4.0
+  twilio_programmable_video: ^1.0.0        # Twilio Video wrapper
+  permission_handler: ^11.0.0               # camera/mic
+import 'dart:async';
+import 'package:firebase_core/firebase_core.dart';
+import 'package:firebase_messaging/firebase_messaging.dart';
+import 'package:cloud_functions/cloud_functions.dart';
+import 'package:twilio_programmable_video/twilio_programmable_video.dart';
+import 'package:flutter/material.dart';
+import 'package:permission_handler/permission_handler.dart';
+
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await Firebase.initializeApp();
+  // background handler MUST be a top-level function
+  FirebaseMessaging.onBackgroundMessage(_bgMsg);
+  runApp(const MyApp());
+}
+
+/// TOP-LEVEL — handles call notification when app is **killed**
+Future<void> _bgMsg(RemoteMessage msg) async {
+  await Firebase.initializeApp();
+  if (msg.data['type'] == 'incoming_call') {
+    // store in a temporary box so UI can pick it up when user cold-starts
+    _callBox = CallOffer(
+      roomSid: msg.data['roomSid']!,
+      callerName: msg.data['callerName']!,
+      callType: msg.data['callType']!,
+    );
+  }
+}
+
+/// Simple global box (ok for demo)
+CallOffer? _callBox;
+
+class CallOffer {
+  final String roomSid;
+  final String callerName;
+  final String callType;
+  CallOffer({required this.roomSid, required this.callerName, required this.callType});
+}
+
+class MyApp extends StatelessWidget {
+  const MyApp({super.key});
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      title: 'Help-Nearby + Twilio',
+      theme: ThemeData(useMaterial3: true),
+      home: const HomePage(),
+    );
+  }
+}
+
+class HomePage extends StatefulWidget {
+  const HomePage({super.key});
+  @override
+  State<HomePage> createState() => _HomePageState();
+}
+
+class _HomePageState extends State<HomePage> {
+  String? _fcmToken;
+  Room? _room;
+  bool _inCall = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _initFirebase();
+    _checkColdStartCall();
+  }
+
+  /* ---------- FCM set-up ---------- */
+  Future<void> _initFirebase() async {
+    // permissions
+    await [
+      Permission.camera,
+      Permission.microphone,
+    ].request();
+
+    final fcm = FirebaseMessaging.instance;
+    await fcm.requestPermission(
+      alert: true, badge: true, sound: true, provisional: false);
+    final token = await fcm.getToken();
+    if (token != null) {
+      await FirebaseFunctions.instance
+          .httpsCallable('saveFcmToken')
+          .call({'token': token});
+      setState(() => _fcmToken = token);
+    }
+
+    // foreground messages
+    FirebaseMessaging.onMessage.listen(_handleCallMsg);
+  }
+
+  /* ---------- Cold-start call (terminated state) ---------- */
+  void _checkColdStartCall() {
+    if (_callBox != null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _showIncomingSheet(_callBox!);
+        _callBox = null;
+      });
+    }
+  }
+
+  /* ---------- Foreground call ---------- */
+  void _handleCallMsg(RemoteMessage msg) {
+    if (msg.data['type'] != 'incoming_call') return;
+    _showIncomingSheet(CallOffer(
+      roomSid: msg.data['roomSid']!,
+      callerName: msg.data['callerName']!,
+      callType: msg.data['callType']!,
+    ));
+  }
+
+  /* ---------- UI: incoming call sheet ---------- */
+  void _showIncomingSheet(CallOffer offer) {
+    showModalBottomSheet(
+      context: context,
+      isDismissible: false,
+      builder: (_) => Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          Text('Incoming ${offer.callType} call',
+              style: const TextStyle(fontSize: 22)),
+          const SizedBox(height: 8),
+          Text(offer.callerName, style: const TextStyle(fontSize: 18)),
+          const SizedBox(height: 24),
+          Row(mainAxisAlignment: MainAxisAlignment.spaceEvenly, children: [
+            ElevatedButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('Decline')),
+            ElevatedButton(
+                onPressed: () {
+                  Navigator.pop(context);
+                  _answerCall(offer.roomSid, offer.callType);
+                },
+                child: const Text('Answer')),
+          ])
+        ]),
+      ),
+    );
+  }
+
+  /* ---------- CALL API ---------- */
+  final functions = FirebaseFunctions.instance;
+
+  /* place */
+  Future<void> _placeCall(String calleeUid, String type) async {
+    try {
+      final resp = await functions.httpsCallable('initiateCall').call({
+        'recipientUid': calleeUid,
+        'type': type,
+      });
+      final roomSid = resp.data['roomSid'] as String;
+      final token = resp.data['token'] as String;
+      await _joinRoom(token, roomSid, type);
+    } catch (e) {
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text('Call failed: $e')));
+    }
+  }
+
+  /* answer */
+  Future<void> _answerCall(String roomSid, String type) async {
+    try {
+      final resp =
+          await functions.httpsCallable('getTwilioToken').call({'roomSid': roomSid});
+      final token = resp.data['token'] as String;
+      await _joinRoom(token, roomSid, type);
+    } catch (e) {
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text('Answer failed: $e')));
+    }
+  }
+
+  /* ---------- TWILIO ROOM ---------- */
+  Future<void> _joinRoom(String token, String roomSid, String type) async {
+    final connectOptions = ConnectOptions(
+      token,
+      roomName: roomSid,
+      enableVideo: type == 'video',
+      enableAudio: true,
+    );
+    final room = await TwilioProgrammableVideo.connect(connectOptions);
+    setState(() => _room = room);
+    _listenRoomEvents(room);
+  }
+
+  void _listenRoomEvents(Room room) {
+    room.onConnected.listen((_) => setState(() => _inCall = true));
+    room.onDisconnected.listen((_) => _leaveRoom());
+    room.onParticipantConnected.listen((event) {
+      // remote participant joined
+    });
+  }
+
+  void _leaveRoom() {
+    _room?.disconnect();
+    setState(() {
+      _room = null;
+      _inCall = false;
+    });
+  }
+
+  /* ---------- DEMO UI ---------- */
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Help-Nearby + Calls')),
+      body: Center(
+        child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+          Text(_fcmToken == null ? 'Fetching FCM token…' : 'Ready to call'),
+          const SizedBox(height: 24),
+          if (!_inCall) ...[
+            ElevatedButton.icon(
+              icon: const Icon(Icons.video_call),
+              label: const Text('Video-call Alice'),
+              onPressed: () => _placeCall('ALICE_UID', 'video'),
+            ),
+            const SizedBox(height: 12),
+            ElevatedButton.icon(
+              icon: const Icon(Icons.call),
+              label: const Text('Voice-call Alice'),
+              onPressed: () => _placeCall('ALICE_UID', 'voice'),
+            ),
+          ] else ...[
+            const Text('In call…'),
+            const SizedBox(height: 12),
+            ElevatedButton.icon(
+              icon: const Icon(Icons.call_end),
+              label: const Text('Hang up'),
+              onPressed: _leaveRoom,
+            ),
+          ]
+        ]),
+      ),
+    );
+  }
+}
+export const saveFcmToken = functions.https.onCall(async (data, context) => {
+  if (!context.auth) throw new functions.https.HttpsError('unauthenticated', '');
+  const { token } = data;
+  await db.collection('users').doc(context.auth.uid).update({ fcmToken: token });
+  return { success: true };
+});
+firebase deploy --only functions
